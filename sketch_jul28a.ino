@@ -59,18 +59,15 @@ void loop() {
 
     // Check WiFi connection status
     if (WiFi.status() == WL_CONNECTED) {
-
       int currentPower = getCurrentPower();
 
       if (currentPower >= minPower) {
-        Serial.println("Zalacz grzalke");
-        digitalWrite(RELAY_PIN, HIGH);
+        enableHeater();
       } else {
-        Serial.println("Wylacz grzalke");
-        digitalWrite(RELAY_PIN, LOW);
+        disableHeater();
       }
     } else {
-      digitalWrite(RELAY_PIN, LOW);
+      disableHeater();
       Serial.println("WiFi Disconnected");
     }
 
@@ -125,4 +122,14 @@ int extractCurrentPower(String str) {
   }
 
   return -1;
+}
+
+void enableHeater() {
+  Serial.println("Zalacz grzalke");
+  digitalWrite(RELAY_PIN, HIGH);
+}
+
+void disableHeater() {
+  Serial.println("Wylacz grzalke");
+  digitalWrite(RELAY_PIN, LOW);
 }
