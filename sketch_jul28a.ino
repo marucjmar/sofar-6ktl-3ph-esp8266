@@ -102,19 +102,16 @@ int doGetCurrentPower() {
   http.addHeader("Authorization", "Basic YWRtaW46YWRtaW4="); // basic auth: admin/admin
 
   const int httpResponseCode = http.GET();
+  int value = -1;
 
   if (httpResponseCode > 0) {
     const String payload = http.getString();
-    const int value = extractCurrentPower(payload);
-
-    http.end();
-
-    return value;
+    value = extractCurrentPower(payload);
   }
 
   http.end();
 
-  return -1;
+  return value;
 }
 
 int extractCurrentPower(String str) {
