@@ -1,7 +1,7 @@
 #include <ESP8266WiFi.h>
 #include <ESP8266HTTPClient.h>
 
-#define RELAY_PIN 4
+const int RELAY_PIN = 12; // D6 on board
 
 // network credentials
 const char* ssid = "---";
@@ -28,6 +28,7 @@ void onWifiConnect(const WiFiEventStationModeGotIP &event) {
 }
 
 void onWifiDisconnect(const WiFiEventStationModeDisconnected &event) {
+  disableHeater();
   Serial.println("Disconnected from Wi-Fi, trying to connect...");
   WiFi.disconnect();
   WiFi.begin(ssid, password);
@@ -37,6 +38,7 @@ void setup() {
   Serial.begin(115200);
 
   pinMode(RELAY_PIN, OUTPUT);
+  digitalWrite(RELAY_PIN, LOW);
   pinMode(LED_BUILTIN, OUTPUT);
 
   // Register event handlers
@@ -48,14 +50,14 @@ void setup() {
   Serial.println(WiFi.RSSI());
 }
 
-const int measurementInterval = 30 * 1000;                           // Czestotliwosc probkowania
+const int measurementInterval = 20 * 1000;                           // Czestotliwosc probkowania
 const int minPower = 4000;                                           // Minimalna moc w watach po przekroczeniu której ma się uruchamiać grzalka
-const String serverStatusPath = "http://192.168.2.100/status.html"; // Adres url do falownika
+const String serverStatusPath = "http://192.168.68.110/status.html"; // Adres url do falownika
 int lastProbeTime = 0;
 
 void loop() {
-  if ((millis() - lastProbeTime) > measurementInterval) {
-    digitalWrite(LED_BUILTIN, HIGH);
+  if ((millis() - lastProbeTime) > measurementInterval || lastProbeTime == 0) {
+    digitalWrite(LED_BUILTIN, LOW);
 
     // Check WiFi connection status
     if (WiFi.status() == WL_CONNECTED) {
@@ -71,7 +73,7 @@ void loop() {
       Serial.println("WiFi Disconnected");
     }
 
-    digitalWrite(LED_BUILTIN, LOW);
+    digitalWrite(LED_BUILTIN, HIGH);
     lastProbeTime = millis();
   }
 }
