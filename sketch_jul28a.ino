@@ -1,5 +1,7 @@
 #include <ESP8266WiFi.h>
 #include <ESP8266HTTPClient.h>
+#include <NTPClient.h>
+#include <WiFiUdp.h>
 
 const int RELAY_PIN = 12; // D6 on board
 
@@ -9,6 +11,11 @@ const char* password = "---";
 
 WiFiEventHandler wifiConnectHandler;
 WiFiEventHandler wifiDisconnectHandler;
+
+const long utcOffsetInSeconds = 3600 * 2;
+
+WiFiUDP ntpUDP;
+NTPClient timeClient(ntpUDP, "pool.ntp.org", utcOffsetInSeconds);
 
 void initWiFi() {
   WiFi.mode(WIFI_STA);
@@ -41,6 +48,7 @@ void setup() {
   digitalWrite(RELAY_PIN, LOW);
   pinMode(LED_BUILTIN, OUTPUT);
 
+
   // Register event handlers
   wifiConnectHandler = WiFi.onStationModeGotIP(onWifiConnect);
   wifiDisconnectHandler = WiFi.onStationModeDisconnected(onWifiDisconnect);
@@ -52,10 +60,13 @@ void setup() {
 
 const int measurementInterval = 20 * 1000;                           // Czestotliwosc probkowania
 const int minPower = 4000;                                           // Minimalna moc w watach po przekroczeniu której ma się uruchamiać grzalka
+const int maxPower = 6300;                                           // Minimalna moc w watach po przekroczeniu której ma się uruchamiać grzalka
 const String serverStatusPath = "http://192.168.68.110/status.html"; // Adres url do falownika
 int lastProbeTime = 0;
 
 void loop() {
+  timeClient.update();
+  
   if ((millis() - lastProbeTime) > measurementInterval || lastProbeTime == 0) {
     digitalWrite(LED_BUILTIN, LOW);
 
@@ -63,7 +74,7 @@ void loop() {
     if (WiFi.status() == WL_CONNECTED) {
       int currentPower = getCurrentPower();
 
-      if (currentPower >= minPower) {
+      if (currentPower >= minPower && currentPower <= maxPower && timeClient.getHours() >= 11 && timeClient.getHours() <= 13) {
         enableHeater();
       } else {
         disableHeater();
