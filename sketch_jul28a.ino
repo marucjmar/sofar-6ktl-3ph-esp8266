@@ -1,22 +1,23 @@
 #include <ESP8266WiFi.h>
-#include <ESP8266HTTPClient.h>
 #include <time.h>
-#include <WiFiUdp.h>
 
 // PIN's
 const int RELAY_PIN = 12; // D6 on board
 
-// network credentials
-const char* ssid = "----";
-const char* password = "----";
+// Network credentials
+const char* WIFI_SSID = "---";
+const char* WIFI_PASSWORD = "---";
 
-// Program Consts
-const int measurementInterval = 20 * 1000;                           // Czestotliwosc probkowania
-const int minPower = 4000;                                           // Minimalna moc w watach po przekroczeniu której ma się uruchamiać grzalka
-const int maxPower = 6300;                                           // Maksymalna moc w watach po przekroczeniu której ma się uruchamiać grzalka
-const int startHour = 11;                                            // Godzina od ktorej ma byc wlaczona grzalka
-const int endHour = 13;                                              // Godzina do ktorej ma byc wlaczona grzalka
-const String serverStatusPath = "http://192.168.68.110/status.html"; // Adres url do falownika
+// Inverter LSW3 Modbus config
+const char* INVERTER_MODBUS_IP = "192.168.68.110";                    // Rezerwacja adresu IP na routerze dla LSW3
+const uint16_t INVERTER_MODBUS_PORT = 8899;
+
+// Heater algo consts
+const int MEASUREMENT_INTERVAL = 20 * 1000;                           // Częstotliwość próbkowania
+const int HEATER_POWER = 2000;                                        // Moc grzałki w Watach
+const int POWER_DRIFT = 100;                                          // Zapas energii na wyjściu do sieci w Watach
+const int START_HOUR = 11;                                            // Godzina od której ma być konsumowana nadwyzka energii
+const int END_HOUR = 13;                                              // Godzina do której ma być konsumowana nadwyzka energii
 
 void setup() {
   Serial.begin(115200);
@@ -37,16 +38,27 @@ void setup() {
 int lastProbeTime = 0;
 
 void loop() {
-  if ((millis() - lastProbeTime) > measurementInterval || lastProbeTime == 0) {
+  if ((millis() - lastProbeTime) > MEASUREMENT_INTERVAL || lastProbeTime == 0) {
     enableBoardLight();
 
     if (WiFi.status() == WL_CONNECTED) {
-      const int currentPower = getCurrentPower();
+      const int currentPCC = getCurrentPCCPower();
+      
+      Serial.print("Wartość PCC: ");
+      Serial.print(currentPCC);
+      Serial.println("W");
+
       const time_t now = time(nullptr);
       const struct tm* timeinfo = localtime(&now);
       const int currentHour = timeinfo->tm_hour;
 
-      if (currentPower >= minPower && currentPower <= maxPower && currentHour >= startHour && currentHour <= endHour) {
+      if (
+          (
+            (!heaterIsEnabled() && currentPCC - POWER_DRIFT >= HEATER_POWER) ||
+            (heaterIsEnabled() && currentPCC >= POWER_DRIFT)
+          ) &&
+          currentHour >= START_HOUR && currentHour <= END_HOUR
+        ) {
         enableHeater();
       } else {
         disableHeater();
@@ -71,7 +83,7 @@ void initWiFi() {
   wifiDisconnectHandler = WiFi.onStationModeDisconnected(onWifiDisconnect);
 
   WiFi.mode(WIFI_STA);
-  WiFi.begin(ssid, password);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   Serial.print("Connecting to WiFi ..");
   while (WiFi.status() != WL_CONNECTED) {
     Serial.print('.');
@@ -91,59 +103,27 @@ void onWifiDisconnect(const WiFiEventStationModeDisconnected &event) {
   disableHeater();
   Serial.println("Disconnected from Wi-Fi, trying to connect...");
   WiFi.disconnect();
-  WiFi.begin(ssid, password);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 }
 //----- End WiFi Section ------
 
-// -----  Get Power Section -----
-int getCurrentPower() {
-  const int retries = 3;
-  int currentPower = -1;
+// -----  Get Registers Values Section -----
+// Gdy wpompujemy energię do sieci to wartość dodatnia, gdy pobieramy prąd z sieci wartość ujemna
+// Wartość zwracana w Watach
+int16_t getCurrentPCCPower() {
+  // modbus.read_holding_registers(0x0488, 2)
+  uint8_t frame[] = {
+    0xA5, 0x17, 0x00, 0x10, 0x45, 0xC6, 0x00,
+    0xB5, 0x43, 0xC3, 0x8E, 0x02, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x03,
+    0x04, 0x88, 0x00, 0x02, 0x45, 0x11, 0x65, 0x15
+  };
 
-  for (int i = 0; i < retries; i++) {
-    currentPower = doGetCurrentPower();
-
-    if (currentPower >= 0) {
-      break;
-    }
-  }
-
-  return currentPower;
+  // Wartość rejestru zapisana w signed int - I16 
+  return ((int16_t)getFrameRegisterValue(frame, sizeof(frame))) * 10;
 }
-
-int doGetCurrentPower() {
-  WiFiClient client;
-  HTTPClient http;
-
-  http.begin(client, serverStatusPath.c_str());
-  http.addHeader("Authorization", "Basic YWRtaW46YWRtaW4="); // Basic auth: admin/admin
-
-  const int httpResponseCode = http.GET();
-  int value = -1;
-
-  if (httpResponseCode > 0) {
-    const String payload = http.getString();
-    value = extractCurrentPower(payload);
-  }
-
-  http.end();
-
-  return value;
-}
-
-int extractCurrentPower(String payload) {
-  const String searchString = "var webdata_now_p = ";
-  const int startIndex = payload.indexOf(searchString) + searchString.length();
-  const int endIndex = payload.indexOf(';', startIndex);
-  const String extractedVal = payload.substring(startIndex + 1, endIndex - 1);
-
-  if (isDigit(extractedVal.charAt(0))) { // wartość moze byc zwrocona jako ---
-    return extractedVal.toInt() * 10; // fix na Moc w Watach, strona podaje wartość ze źle przesuniętym przecinkiem
-  }
-
-  return -1;
-}
-// -----  End Get Power Section -----
+// -----  End Registers Values Section -----
 
 // ----- PIN's functions -----------
 void enableHeater() {
@@ -154,6 +134,10 @@ void enableHeater() {
 void disableHeater() {
   Serial.println("Wylacz grzalke");
   digitalWrite(RELAY_PIN, LOW);
+}
+
+bool heaterIsEnabled() {
+  return digitalRead(RELAY_PIN) == HIGH;
 }
 
 void enableBoardLight() {
@@ -167,3 +151,82 @@ void disableBoardLight() {
 }
 // ----- END PIN's functions ---------
 
+uint16_t getFrameRegisterValue(uint8_t frame[], size_t lenFrame) {
+  WiFiClient client;
+  int startTime = millis();
+
+  if (!client.connect(INVERTER_MODBUS_IP, INVERTER_MODBUS_PORT)) {
+    Serial.println("Blad polaczenia TCP");
+    return 0;
+  }
+
+  client.write(frame, lenFrame);
+  client.flush();
+
+  int timeout = 5000;
+  int awaitTime = 0;
+  int delayTime = 200;
+
+  // Waiting to response
+  while (!client.available() && awaitTime <= timeout) {
+    delay(delayTime);
+    awaitTime += delayTime;
+  }
+
+  uint16_t value = 0;
+
+  while (client.available()) {
+    uint8_t responseFrame[256];
+    int responseFrameLength = client.read(responseFrame, sizeof(responseFrame));
+    int endTime = millis();
+    
+    Serial.print("Ramka odpowiedzi: ");
+    for (int i = 0; i < responseFrameLength; i++) {
+        Serial.printf("%02X ", responseFrame[i]);
+    }
+    Serial.println();
+
+    Serial.print("Czas zapytania o ramkę: ");
+    Serial.print(endTime - startTime);
+    Serial.println("ms");
+
+    Serial.print("Otrzymano bajtów: ");
+    Serial.println(responseFrameLength);
+    value = parseModbusRegister(responseFrame, responseFrameLength, 0);
+  }
+
+  client.stop();
+
+  return value;
+}
+
+// Funkcja dekodująca ramkę modbus i zwracająca wartość rejestru o podanym numerze
+uint16_t parseModbusRegister(uint8_t* frame, size_t length, uint8_t registerNumber) {
+  // Znajdź funkcję Modbus (0x03 lub 0x04)
+  int funcIndex = -1;
+  for (int i = 0; i < length; i++) {
+    if (frame[i] == 0x03 || frame[i] == 0x04) {
+      funcIndex = i;
+      break;
+    }
+  }
+
+  if (funcIndex == -1 || funcIndex + 1 >= length) {
+    Serial.println("Nie znaleziono funkcji Modbus w ramce");
+    return 0; // błąd
+  }
+
+  uint8_t byteCount = frame[funcIndex + 1];
+  int totalRegisters = byteCount / 2;
+
+  if (registerNumber >= totalRegisters) {
+    Serial.println("Nieprawidłowy numer rejestru");
+    return 0; // błąd
+  }
+
+  int dataStart = funcIndex + 2;
+  int index = dataStart + registerNumber * 2;
+  uint16_t regValue = (frame[index] << 8) | frame[index + 1]; // MSB | LSB
+
+  return regValue;
+}
