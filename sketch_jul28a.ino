@@ -192,15 +192,10 @@ uint16_t getFrameRegisterValue(uint8_t frame[], size_t lenFrame) {
 // Funkcja dekodująca ramkę modbus i zwracająca wartość rejestru o podanym numerze
 uint16_t parseModbusRegister(uint8_t* frame, size_t length, uint8_t registerNumber) {
   // Znajdź funkcję Modbus (0x03 lub 0x04)
-  int funcIndex = -1;
-  for (int i = 0; i < length; i++) {
-    if (frame[i] == 0x03 || frame[i] == 0x04) {
-      funcIndex = i;
-      break;
-    }
-  }
+  int modbusStartIndex = 25;
+  int funcIndex = modbusStartIndex + 1;
 
-  if (funcIndex == -1 || funcIndex + 1 >= length) {
+  if (frame[modbusStartIndex] != 0x01 && (frame[modbusStartIndex + 1] != 0x03 || frame[modbusStartIndex + 1] != 0x04)) {
     Serial.println("Nie znaleziono funkcji Modbus w ramce");
     return 0; // błąd
   }
