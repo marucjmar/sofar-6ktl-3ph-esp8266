@@ -16,8 +16,6 @@ const uint16_t INVERTER_MODBUS_PORT = 8899;
 const int MEASUREMENT_INTERVAL = 20 * 1000;                           // Częstotliwość próbkowania
 const int HEATER_POWER = 2000;                                        // Moc grzałki w Watach
 const int POWER_DRIFT = 100;                                          // Zapas energii na wyjściu do sieci w Watach
-const int START_HOUR = 11;                                            // Godzina od której ma być konsumowana nadwyzka energii
-const int END_HOUR = 13;                                              // Godzina do której ma być konsumowana nadwyzka energii
 
 void setup() {
   Serial.begin(115200);
@@ -53,13 +51,10 @@ void loop() {
       const int currentHour = timeinfo->tm_hour;
 
       if (
-          (
-            // Gdy grzałka jest wyłączona oraz wpompowana energia do sieci przekracza moc grzałki (z ustawionym zapasem)
-            (!heaterIsEnabled() && currentPCC - POWER_DRIFT >= HEATER_POWER) ||
-            // Gdy grzałka jest włączona oraz wpompowana jest energia do sieci z zapasem (obsłuzenie sytuacji aby włączona grzałka się wyłączyła gdy zaczynamy pobierać energię z sieci)
-            (heaterIsEnabled() && currentPCC >= POWER_DRIFT)
-          ) &&
-          currentHour >= START_HOUR && currentHour <= END_HOUR
+          // Gdy grzałka jest wyłączona oraz wpompowana energia do sieci przekracza moc grzałki (z ustawionym zapasem)
+          (!heaterIsEnabled() && currentPCC - POWER_DRIFT >= HEATER_POWER) ||
+          // Gdy grzałka jest włączona oraz wpompowana jest energia do sieci z zapasem (obsłuzenie sytuacji aby włączona grzałka się wyłączyła gdy zaczynamy pobierać energię z sieci)
+          (heaterIsEnabled() && currentPCC >= POWER_DRIFT)
         ) {
         enableHeater();
       } else {
