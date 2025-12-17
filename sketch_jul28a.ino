@@ -54,7 +54,9 @@ void loop() {
 
       if (
           (
+            // Gdy grzałka jest wyłączona oraz wpompowana energia do sieci przekracza moc grzałki (z ustawionym zapasem)
             (!heaterIsEnabled() && currentPCC - POWER_DRIFT >= HEATER_POWER) ||
+            // Gdy grzałka jest włączona oraz wpompowana jest energia do sieci z zapasem (obsłuzenie sytuacji aby włączona grzałka się wyłączyła gdy zaczynamy pobierać energię z sieci)
             (heaterIsEnabled() && currentPCC >= POWER_DRIFT)
           ) &&
           currentHour >= START_HOUR && currentHour <= END_HOUR
