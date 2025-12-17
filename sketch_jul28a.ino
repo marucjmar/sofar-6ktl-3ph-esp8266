@@ -1,5 +1,4 @@
 #include <ESP8266WiFi.h>
-#include <time.h>
 
 // PIN's
 const int RELAY_PIN = 12; // D6 on board
@@ -19,9 +18,6 @@ const int POWER_DRIFT = 100;                                          // Zapas e
 
 void setup() {
   Serial.begin(115200);
-
-  // Time config
-  configTime("CET-1CEST,M3.5.0/2,M10.5.0/3", "pool.ntp.org", "time.nist.gov");
 
   // PIN'S bindings
   pinMode(RELAY_PIN, OUTPUT);
@@ -45,10 +41,6 @@ void loop() {
       Serial.print("Wartość PCC: ");
       Serial.print(currentPCC);
       Serial.println("W");
-
-      const time_t now = time(nullptr);
-      const struct tm* timeinfo = localtime(&now);
-      const int currentHour = timeinfo->tm_hour;
 
       if (
           // Gdy grzałka jest wyłączona oraz wpompowana energia do sieci przekracza moc grzałki (z ustawionym zapasem)
