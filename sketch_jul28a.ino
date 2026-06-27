@@ -20,7 +20,36 @@ const uint16_t INVERTER_MODBUS_PORT = 8899;
 // Heater algo consts
 const int MEASUREMENT_INTERVAL = 20 * 1000;                           // Częstotliwość próbkowania
 const int HEATER_POWER = 2000;                                        // Moc grzałki w Watach
-const int POWER_DRIFT = 100;                                          // Zapas energii na wyjściu do sieci w Watach
+const int POWER_HYSTERESIS = 100;                                     // Zapas energii na wyjściu do sieci w Watach
+
+// -----  Types Section ----
+struct PCCReadResult {
+  bool success;
+  int32_t powerWatts;
+};
+
+struct ModbusReadResult {
+  bool success;
+  uint16_t value;
+};
+
+class Probe {
+public:
+  explicit Probe(unsigned long intervalMs) : interval(intervalMs), lastProbeTime(0) {}
+
+  bool shouldDo() const {
+    return lastProbeTime == 0 || (millis() - lastProbeTime) > interval;
+  }
+
+  void checked() {
+    lastProbeTime = millis();
+  }
+
+private:
+  const unsigned long interval;
+  unsigned long lastProbeTime;
+};
+// -----  End Types Section ----
 
 void setup() {
   Serial.begin(115200);
@@ -35,37 +64,61 @@ void setup() {
 }
 
 // Loop Variables
-int lastProbeTime = 0;
+Probe heaterProbe(MEASUREMENT_INTERVAL);
 
 void loop() {
-  if ((millis() - lastProbeTime) > MEASUREMENT_INTERVAL || lastProbeTime == 0) {
-    enableBoardLight();
-
-    if (WiFi.status() == WL_CONNECTED) {
-      const int currentPCC = getCurrentPCCPower();
-      
-      Serial.print("Wartość PCC: ");
-      Serial.print(currentPCC);
-      Serial.println("W");
-
-      if (
-          // Gdy grzałka jest wyłączona oraz wpompowana energia do sieci przekracza moc grzałki (z ustawionym zapasem)
-          (!heaterIsEnabled() && currentPCC - POWER_DRIFT >= HEATER_POWER) ||
-          // Gdy grzałka jest włączona oraz wpompowana jest energia do sieci z zapasem (obsłuzenie sytuacji aby włączona grzałka się wyłączyła gdy zaczynamy pobierać energię z sieci)
-          (heaterIsEnabled() && currentPCC >= POWER_DRIFT)
-        ) {
-        enableHeater();
-      } else {
-        disableHeater();
-      }
-    } else {
-      disableHeater();
-      Serial.println("WiFi Disconnected");
-    }
-
-    disableBoardLight();
-    lastProbeTime = millis();
+  if (!heaterProbe.shouldDo()) {
+    return;
   }
+
+  if (WiFi.status() != WL_CONNECTED) {
+    disableHeater();
+    Serial.println("WiFi Disconnected");
+
+    return;
+  }
+
+  enableBoardLight();
+
+  PCCReadResult pccResult = getCurrentPCCPower();
+
+  if (!pccResult.success) {
+    Serial.println("Blad odczytu z falownika - wylaczam grzaleczke");
+    disableHeater();
+    disableBoardLight();
+
+    heaterProbe.checked();
+    return;
+  }
+
+  const int32_t currentPCC = pccResult.powerWatts;
+  
+  Serial.print("Wartość PCC: ");
+  Serial.print(currentPCC);
+  Serial.println("W");
+
+  if (shouldHeaterBeEnabled(currentPCC)) {
+    enableHeater();
+  } else {
+    disableHeater();
+  }
+
+  disableBoardLight();
+  heaterProbe.checked();
+}
+
+bool shouldHeaterBeEnabled(int32_t currentPCC) {
+  const bool heaterOn = heaterIsEnabled();
+
+  // Grzałka wyłączona: włączamy, gdy wprowadzana energia do sieci
+  // przekracza moc grzałki (z zapasem)
+  if (!heaterOn) {
+    return currentPCC - POWER_HYSTERESIS >= HEATER_POWER;
+  }
+
+  // Grzałka włączona: wyłączamy, gdy zaczynamy pobierać energię z sieci
+  // (zostawiamy włączoną tylko, gdy wciąż oddajemy energię z zapasem)
+  return currentPCC >= POWER_HYSTERESIS;
 }
 
 // -----  WiFi Section -----
@@ -102,12 +155,12 @@ void onWifiDisconnect(const WiFiEventStationModeDisconnected &event) {
 }
 //----- End WiFi Section ------
 
-// -----  Get Registers Values Section -----
+// -----  Get Registers Values Section ----
 // Gdy wpompujemy energię do sieci to wartość dodatnia, gdy pobieramy prąd z sieci wartość ujemna
 // Wartość zwracana w Watach
-int16_t getCurrentPCCPower() {
+PCCReadResult getCurrentPCCPower() {
   // modbus.read_holding_registers(0x0488, 2)
-  uint8_t frame[] = {
+  const uint8_t frame[] = {
     0xA5, 0x17, 0x00, 0x10, 0x45, 0xC6, 0x00,
     0xB5, 0x43, 0xC3, 0x8E, 0x02, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -115,8 +168,13 @@ int16_t getCurrentPCCPower() {
     0x04, 0x88, 0x00, 0x02, 0x45, 0x11, 0x65, 0x15
   };
 
-  // Wartość rejestru zapisana w signed int - I16 
-  return ((int16_t)getFrameRegisterValue(frame, sizeof(frame))) * 10;
+  ModbusReadResult result = getFrameRegisterValue(frame, sizeof(frame));
+
+  if (!result.success) {
+    return { false, 0 };
+  }
+
+  return { true, ((int16_t)result.value) * 10 };
 }
 // -----  End Registers Values Section -----
 
@@ -146,21 +204,22 @@ void disableBoardLight() {
 }
 // ----- END PIN's functions ---------
 
-uint16_t getFrameRegisterValue(uint8_t frame[], size_t lenFrame) {
+// ----- Modbus functions -----------
+ModbusReadResult getFrameRegisterValue(const uint8_t frame[], const size_t lenFrame) {
   WiFiClient client;
-  int startTime = millis();
+  const unsigned long startTime = millis();
 
   if (!client.connect(INVERTER_MODBUS_IP, INVERTER_MODBUS_PORT)) {
     Serial.println("Blad polaczenia TCP");
-    return 0;
+    return { false, 0 };
   }
 
   client.write(frame, lenFrame);
   client.flush();
 
-  int timeout = 5000;
+  const int timeout = 5000;
+  const int delayTime = 200;
   int awaitTime = 0;
-  int delayTime = 200;
 
   // Waiting to response
   while (!client.available() && awaitTime <= timeout) {
@@ -168,12 +227,18 @@ uint16_t getFrameRegisterValue(uint8_t frame[], size_t lenFrame) {
     awaitTime += delayTime;
   }
 
-  uint16_t value = 0;
+  ModbusReadResult result = { false, 0 };
 
   while (client.available()) {
     uint8_t responseFrame[256];
-    int responseFrameLength = client.read(responseFrame, sizeof(responseFrame));
-    int endTime = millis();
+    const int responseFrameLength = client.read(responseFrame, sizeof(responseFrame));
+
+    if (responseFrameLength <= 0) {
+      Serial.println("Blad odczytu odpowiedzi");
+      continue;
+    }
+
+    const unsigned long endTime = millis();
     
     Serial.print("Ramka odpowiedzi: ");
     for (int i = 0; i < responseFrameLength; i++) {
@@ -187,36 +252,56 @@ uint16_t getFrameRegisterValue(uint8_t frame[], size_t lenFrame) {
 
     Serial.print("Otrzymano bajtów: ");
     Serial.println(responseFrameLength);
-    value = parseModbusRegister(responseFrame, responseFrameLength, 0);
+    
+    ModbusReadResult parsed = parseModbusRegister(responseFrame, responseFrameLength, 0);
+
+    if (parsed.success) {
+      result = parsed;
+    } else {
+      Serial.println("Blad parsowania ramki Modbus");
+    }
   }
 
   client.stop();
 
-  return value;
+  return result;
 }
 
 // Funkcja dekodująca ramkę modbus i zwracająca wartość rejestru o podanym numerze
-uint16_t parseModbusRegister(uint8_t* frame, size_t length, uint8_t registerNumber) {
+ModbusReadResult parseModbusRegister(uint8_t* frame, size_t length, uint8_t registerNumber) {
   // Znajdź funkcję Modbus (0x03 lub 0x04)
-  int modbusStartIndex = 25;
-  int funcIndex = modbusStartIndex + 1;
+  const int modbusStartIndex = 25;
+  const int funcIndex = modbusStartIndex + 1;
 
-  if (frame[modbusStartIndex] != 0x01 && (frame[modbusStartIndex + 1] != 0x03 || frame[modbusStartIndex + 1] != 0x04)) {
-    Serial.println("Nie znaleziono funkcji Modbus w ramce");
-    return 0; // błąd
+  if (length < (size_t)(funcIndex + 2)) {
+    Serial.println("Ramka za krótka");
+    return { false, 0 };
   }
 
-  uint8_t byteCount = frame[funcIndex + 1];
-  int totalRegisters = byteCount / 2;
+  const int operationId = frame[modbusStartIndex + 1];
+
+  if (frame[modbusStartIndex] != 0x01 && (operationId != 0x03 && operationId != 0x04)) {
+    Serial.println("Nie znaleziono funkcji Modbus w ramce");
+    return { false, 0 };
+  }
+
+  const uint8_t byteCount = frame[funcIndex + 1];
+  const int totalRegisters = byteCount / 2;
 
   if (registerNumber >= totalRegisters) {
     Serial.println("Nieprawidłowy numer rejestru");
-    return 0; // błąd
+    return { false, 0 };
   }
 
-  int dataStart = funcIndex + 2;
-  int index = dataStart + registerNumber * 2;
-  uint16_t regValue = (frame[index] << 8) | frame[index + 1]; // MSB | LSB
+  const int dataStart = funcIndex + 2;
+  const int index = dataStart + registerNumber * 2;
 
-  return regValue;
+  if (length < (size_t)(index + 2)) {
+    Serial.println("Ramka za krótka dla żądanego rejestru");
+    return { false, 0 };
+  }
+
+  const uint16_t regValue = (frame[index] << 8) | frame[index + 1]; // MSB | LSB
+  return { true, regValue };
 }
+// ----- End Modbus functions -----------
