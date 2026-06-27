@@ -1,6 +1,6 @@
 // Doc's
 // SOFAR-G3 Registers
-// https://docs.google.com/spreadsheets/d/18OJS0J_MbOt52aF8X8rI1uK5xMWb2dtK
+// ./PDF in project
 // Solarman v5 protocol
 // https://pysolarmanv5.readthedocs.io/en/stable/solarmanv5_protocol.html
 
